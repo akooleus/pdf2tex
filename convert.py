@@ -120,6 +120,48 @@ _GREEK_RE = re.compile(
 
 PUA_MAP: dict[str, str] = {chr(0xF000 + c): chr(c) for c in range(0x20, 0x7F)}
 
+# Extended PUA mappings beyond ASCII (Symbol font encoding)
+PUA_MAP_EXT: dict[str, str] = {
+    "\uF0B7": "\\textbullet{}",   # bullet
+    "\uF0D7": "$\\times$",        # multiplication sign
+    "\uF0F7": "$\\div$",          # division sign
+    "\uF0AE": "$\\Rightarrow$",   # right double arrow
+    "\uF0A7": "\\S{}",            # section sign
+    "\uF0B0": "$^{\\circ}$",      # degree sign
+    "\uF0B1": "$\\pm$",           # plus-minus
+    "\uF0AB": "$\\leftarrow$",    # left arrow
+    "\uF0AC": "$\\uparrow$",      # up arrow
+    "\uF0AD": "$\\downarrow$",    # down arrow
+    "\uF0BB": "$\\equiv$",        # equivalence
+    "\uF0B2": "$\\geq$",          # greater or equal
+    "\uF0A3": "$\\leq$",          # less or equal
+    "\uF0E4": "$\\otimes$",       # circled times
+    "\uF0C5": "$\\|$",            # double vertical bar
+}
+
+
+# ---------------------------------------------------------------------------
+#  Bare Unicode Greek letters → LaTeX commands  (for pdflatex + T2A)
+# ---------------------------------------------------------------------------
+
+BARE_GREEK_MAP: dict[str, str] = {
+    "Α": r"A", "Β": r"B", "Ε": r"E", "Ζ": r"Z",  # visually identical to Latin
+    "Η": r"H", "Ι": r"I", "Κ": r"K", "Μ": r"M",
+    "Ν": r"N", "Ο": r"O", "Ρ": r"P", "Τ": r"T",
+    "Υ": r"Y", "Χ": r"X",
+    "Γ": r"$\Gamma$", "Δ": r"$\Delta$", "Θ": r"$\Theta$",
+    "Λ": r"$\Lambda$", "Ξ": r"$\Xi$", "Π": r"$\Pi$",
+    "Σ": r"$\Sigma$", "Φ": r"$\Phi$", "Ψ": r"$\Psi$",
+    "Ω": r"$\Omega$",
+    "α": r"$\alpha$", "β": r"$\beta$", "γ": r"$\gamma$",
+    "δ": r"$\delta$", "ε": r"$\varepsilon$", "ζ": r"$\zeta$",
+    "η": r"$\eta$", "θ": r"$\theta$", "ι": r"$\iota$",
+    "κ": r"$\kappa$", "λ": r"$\lambda$", "μ": r"$\mu$",
+    "ν": r"$\nu$", "ξ": r"$\xi$", "π": r"$\pi$",
+    "ρ": r"$\rho$", "σ": r"$\sigma$", "ς": r"$\sigma$",
+    "τ": r"$\tau$", "υ": r"$\upsilon$", "φ": r"$\varphi$",
+    "χ": r"$\chi$", "ψ": r"$\psi$", "ω": r"$\omega$",
+}
 # ---------------------------------------------------------------------------
 #  Dehyphenation patterns
 # ---------------------------------------------------------------------------
@@ -226,13 +268,14 @@ def clean_markdown(md_path: Path) -> Path:
     text = md_path.read_text("utf-8")
     tags: list[str] = []
 
-    # PUA → ASCII
+    # PUA → ASCII / LaTeX
     pua_n = 0
-    for k, v in PUA_MAP.items():
-        n = text.count(k)
-        if n:
-            text = text.replace(k, v)
-            pua_n += n
+    for mapping in (PUA_MAP, PUA_MAP_EXT):
+        for k, v in mapping.items():
+            n = text.count(k)
+            if n:
+                text = text.replace(k, v)
+                pua_n += n
     if pua_n:
         tags.append(f"pua={pua_n}")
 
@@ -247,6 +290,36 @@ def clean_markdown(md_path: Path) -> Path:
     text, n = _GREEK_RE.subn(_split_greek, text)
     if n:
         tags.append(f"greek_split={n}")
+
+    # bare Unicode Greek → LaTeX
+    greek_n = 0
+    for k, v in BARE_GREEK_MAP.items():
+        n = text.count(k)
+        if n:
+            text = text.replace(k, v)
+            greek_n += n
+    if greek_n:
+        tags.append(f"bare_greek={greek_n}")
+
+    # fullwidth / misc Unicode -> ASCII/LaTeX
+    _fw_map = {
+        "\uff0d": "-",       # fullwidth hyphen-minus
+        "\uff0b": "+",       # fullwidth plus
+        "\uff08": "(",       # fullwidth left paren
+        "\uff09": ")",       # fullwidth right paren
+        "\uff1d": "=",       # fullwidth equals
+        "\u00b2": "$^{2}$",  # superscript 2
+        "\u00b3": "$^{3}$",  # superscript 3
+        "\u00b9": "$^{1}$",  # superscript 1
+    }
+    fw_n = 0
+    for k, v in _fw_map.items():
+        n = text.count(k)
+        if n:
+            text = text.replace(k, v)
+            fw_n += n
+    if fw_n:
+        tags.append(f"fullwidth={fw_n}")
 
     # junk \?
     n = text.count("\\?")
@@ -302,8 +375,8 @@ def md_to_tex(md_path: Path, tex_path: Path) -> None:
 def _fix_delimiters(content: str) -> tuple[str, int]:
     """Balance \\left / \\right inside math environments."""
     count = 0
-    left_re = re.compile(r"\\left\s*(?:[\[\(\{|.]|\\l[vV]ert)")
-    right_re = re.compile(r"\\right\s*(?:[\]\)\}|.]|\\[rl][vV]ert)")
+    left_re = re.compile(r"\\left\s*(?:[\[\(\{|./]|\\[{}]|\\l[vV]ert)")
+    right_re = re.compile(r"\\right\s*(?:[\]\)\}|./]|\\[{}]|\\[rl][vV]ert)")
 
     def _bal(m: re.Match[str]) -> str:
         nonlocal count
