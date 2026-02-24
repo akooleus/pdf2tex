@@ -22,7 +22,7 @@ Works with math-heavy documents. Handles Cyrillic out of the box.
 ## Install
 
 ```bash
-git clone https://github.com/YOURUSER/pdf2tex.git ~/.local/share/pdf2tex
+git clone https://github.com/akooleus/pdf2tex.git ~/.local/share/pdf2tex
 cd ~/.local/share/pdf2tex
 ./setup.sh
 ```
