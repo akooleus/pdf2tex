@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MODELS_DIR="$SCRIPT_DIR/models"
+CONFIG_FILE="$HOME/magic-pdf.json"
+BIN_DIR="$HOME/.local/bin"
+WRAPPER="$BIN_DIR/pdf2tex"
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
+info() { echo -e "${CYAN}::${NC} $*"; }
+ok()   { echo -e "${GREEN}ok${NC} $*"; }
+warn() { echo -e "${YELLOW}!!${NC} $*"; }
+die()  { echo -e "${RED}!!${NC} $*"; exit 1; }
+
+# ── uninstall ──────────────────────────────────────────────
+
+if [[ "${1:-}" == "--uninstall" || "${1:-}" == "-u" ]]; then
+    info "uninstalling pdf2tex"
+
+    [[ -d "$SCRIPT_DIR/.venv" ]] && rm -rf "$SCRIPT_DIR/.venv" && ok "removed .venv"
+    [[ -d "$MODELS_DIR" ]]       && rm -rf "$MODELS_DIR"       && ok "removed models/"
+    [[ -f "$SCRIPT_DIR/uv.lock" ]] && rm -f "$SCRIPT_DIR/uv.lock"
+
+    if [[ -f "$WRAPPER" ]]; then
+        rm -f "$WRAPPER"
+        ok "removed $WRAPPER"
+    fi
+
+    if [[ -f "$CONFIG_FILE" ]]; then
+        echo -en "  remove $CONFIG_FILE? [y/N] "
+        read -r ans
+        [[ "$ans" =~ ^[Yy]$ ]] && rm -f "$CONFIG_FILE" && ok "removed $CONFIG_FILE"
+    fi
+
+    echo ""
+    info "done. project dir left intact: $SCRIPT_DIR"
+    info "delete it yourself if you want: rm -rf $SCRIPT_DIR"
+    exit 0
+fi
+
+# ── checks ─────────────────────────────────────────────────
+
+info "checking system dependencies"
+
+command -v uv         &>/dev/null || die "uv not found — https://docs.astral.sh/uv/getting-started/installation/"
+command -v pandoc     &>/dev/null || warn "pandoc not found — needed for md→tex (pacman -S pandoc / apt install pandoc)"
+command -v nvidia-smi &>/dev/null || warn "nvidia-smi not found — GPU acceleration may not work"
+
+if command -v nvidia-smi &>/dev/null; then
+    drv=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits 2>/dev/null | head -1 || true)
+    info "NVIDIA driver: $drv"
+fi
+
+# ── uv sync ────────────────────────────────────────────────
+
+info "syncing environment"
+cd "$SCRIPT_DIR"
+uv sync || die "uv sync failed"
+ok "dependencies installed"
+
+# ── models ─────────────────────────────────────────────────
+
+info "downloading models (~5-10 GB, may take a while)"
+mkdir -p "$MODELS_DIR"
+export MODELS_DIR_PATH="$MODELS_DIR"
+
+uv run python <<'PYEOF'
+import os, sys
+from pathlib import Path
+
+models_dir = Path(os.environ["MODELS_DIR_PATH"])
+models_dir.mkdir(parents=True, exist_ok=True)
+
+try:
+    from huggingface_hub import snapshot_download
+except ImportError:
+    print("  huggingface_hub not found, models will download on first run")
+    sys.exit(0)
+
+try:
+    print(f"  target: {models_dir}")
+    print("  -> PDF-Extract-Kit-1.0 ...")
+    snapshot_download(
+        "opendatalab/PDF-Extract-Kit-1.0",
+        local_dir=str(models_dir / "PDF-Extract-Kit-1.0"),
+        max_workers=4,
+    )
+    print("  done")
+except Exception as e:
+    print(f"  download failed: {e}")
+    print("  models will download on first run instead")
+PYEOF
+
+ok "models ready"
+
+# ── config ─────────────────────────────────────────────────
+
+info "writing config → $CONFIG_FILE"
+
+SKIP=false
+if [[ -f "$CONFIG_FILE" ]]; then
+    echo -en "  $CONFIG_FILE exists. overwrite? [y/N] "
+    read -r ans
+    [[ ! "$ans" =~ ^[Yy]$ ]] && SKIP=true && info "keeping existing config"
+fi
+
+if [[ "$SKIP" != "true" ]]; then
+    cat > "$CONFIG_FILE" <<JSONEOF
+{
+    "models-dir": "$MODELS_DIR/PDF-Extract-Kit-1.0/models",
+    "device-mode": "cuda",
+    "table-config": {
+        "is_table_recog_enable": true,
+        "max_time": 400
+    },
+    "layout-config": {
+        "model": "doclayout_yolo"
+    },
+    "formula-config": {
+        "mfd_model": "yolo_v8_mfd",
+        "mfr_model": "unimernet_small",
+        "enable": true
+    }
+}
+JSONEOF
+    ok "config written"
+fi
+
+# ── verify ─────────────────────────────────────────────────
+
+info "verifying installation"
+
+uv run python <<'PYEOF'
+import sys
+errs = []
+try:
+    import torch
+    ok = torch.cuda.is_available()
+    if ok:
+        name = torch.cuda.get_device_name(0)
+        vram = torch.cuda.get_device_properties(0).total_memory / 1024**3
+        print(f"  torch    ok  CUDA={ok}  {name}  {vram:.1f}GB")
+    else:
+        print("  torch    ok  (CUDA not available)")
+        errs.append("CUDA")
+except ImportError:
+    print("  torch    MISSING"); errs.append("torch")
+
+try:
+    import magic_pdf
+    print(f"  mineru   ok  v{getattr(magic_pdf, '__version__', '?')}")
+except ImportError:
+    print("  mineru   MISSING"); errs.append("magic-pdf")
+
+try:
+    import huggingface_hub
+    print(f"  hf_hub   ok  v{huggingface_hub.__version__}")
+except ImportError:
+    print("  hf_hub   MISSING"); errs.append("huggingface-hub")
+
+if errs:
+    print(f"\n  problems: {', '.join(errs)}")
+    sys.exit(1)
+PYEOF
+
+ok "all checks passed"
+
+# ── wrapper script ─────────────────────────────────────────
+
+info "installing wrapper → $WRAPPER"
+
+mkdir -p "$BIN_DIR"
+
+cat > "$WRAPPER" <<WRAPEOF
+#!/usr/bin/env bash
+# pdf2tex — generated by setup.sh, do not edit
+exec env -C "$SCRIPT_DIR" uv run python convert.py "\$@"
+WRAPEOF
+chmod +x "$WRAPPER"
+
+# check that ~/.local/bin is in PATH
+if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
+    warn "$BIN_DIR is not in your \$PATH"
+    warn "add it:  export PATH=\"\$HOME/.local/bin:\$PATH\""
+fi
+
+ok "wrapper installed"
+
+# ── done ───────────────────────────────────────────────────
+
+echo ""
+info "setup complete"
+echo ""
+echo "  usage:"
+echo "    pdf2tex input.pdf output.tex"
+echo ""
+echo "  options:"
+echo "    --keep-md          save intermediate markdown"
+echo "    --keep-work        keep MinerU work directory"
+echo "    --no-images        skip image extraction"
+echo "    --no-compile-check skip trial pdflatex run"
+echo ""
+echo "  uninstall:"
+echo "    $SCRIPT_DIR/setup.sh --uninstall"
+echo ""

@@ -1,0 +1,45 @@
+[project]
+name = "pdf2tex"
+version = "0.1.0"
+description = "Convert PDF to compilable LaTeX via MinerU + pandoc"
+requires-python = ">=3.10"
+dependencies = [
+    "magic-pdf>=1.0.0",
+    "huggingface-hub>=0.20.0",
+    "torch>=2.2.0",
+    "torchvision>=0.15.0",
+    # magic-pdf[full] pins torch<=2.3.1 which conflicts with cu124,
+    # so we list its runtime deps explicitly instead:
+    "paddlepaddle>=3.0.0rc1",
+    "paddleocr==2.7.3",
+    "unimernet==0.2.3",
+    "ultralytics>=8.3.48",
+    "doclayout-yolo>=0.0.2b1",
+    "struct-eqtable>=0.3.2",
+    "einops",
+    "accelerate",
+    "pyyaml",
+    "rapidocr-paddle>=1.4.5,<2.0.0",
+    "rapidocr-onnxruntime>=1.4.4,<2.0.0",
+    "rapid-table>=1.0.3,<2.0.0",
+    "setuptools",
+    "pycocotools",
+    "detectron2",
+    "openai",
+    "datasets>=3.0.0",
+]
+
+[tool.uv]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+torchvision = { index = "pytorch-cu124" }
+detectron2 = { git = "https://github.com/facebookresearch/detectron2.git" }
+
+[tool.uv.extra-build-dependencies]
+detectron2 = ["torch"]

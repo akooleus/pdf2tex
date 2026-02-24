@@ -1,0 +1,19 @@
+.venv/
+models/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+uv.lock
+
+# pdflatex junk
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+
+# OS
+.DS_Store
+Thumbs.db
